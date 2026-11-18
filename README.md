@@ -49,7 +49,7 @@ O convidado deve conhecer o endereço IP do computador anfitrião.
 No segundo computador, execute:
 
 ```powershell
-python batalha_naval.py --conectar 192.168.1.100 5000 --apelido beto
+python batalha_naval.py --conectar 127.0.0.1 5000 --apelido beto
 ```
 
 - `--conectar`: indica que o jogador será o convidado.
