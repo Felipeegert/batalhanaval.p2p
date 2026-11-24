@@ -96,3 +96,8 @@ O anfitrião é o primeiro a jogar.
 ## 7. Encerramento
 
 Para encerrar a conexão nesta versão inicial, pressione ENTER no terminal de qualquer um dos jogadores.
+## Atualização — etapas 5, 6 e 7
+
+Durante sua vez, digite `sair` para encerrar ou `ajuda` para instruções. Não há mais pausa com ENTER. Use `python -m unittest -v` para rodar os testes automatizados.
+
+Timeout de RESULTADO: 5 segundos; até 3 reenvios antes de tentar reconectar. Prazo de reconexão: 60 segundos. O estado é preservado em memória enquanto os processos estão vivos. Consulte PROTOCOLO.md e TESTES.md. Os tempos e a semântica de RETOMAR precisam ser confirmados com a turma.

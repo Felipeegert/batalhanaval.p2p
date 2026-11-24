@@ -1,0 +1,22 @@
+test_conferencia (test_partida.Testes.test_conferencia) ... ok
+test_duplicado (test_partida.Testes.test_duplicado) ... ok
+test_fluxo (test_partida.Testes.test_fluxo) ... ok
+test_invalido (test_partida.Testes.test_invalido) ... ok
+test_timeout (test_partida.Testes.test_timeout) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.022s
+
+OK
+[TIRO RECEBIDO] A1: ACERTOU
+[ENVIO] RESULTADO 1 ACERTOU
+[ENVIO] RESULTADO 1 ACERTOU
+[ENVIO] ERRO sequencia_reutilizada
+[ENVIO] ERRO formato_tiro_invalido
+[TIRO RECEBIDO] A1: ACERTOU
+[ENVIO] RESULTADO 1 ACERTOU
+[ENVIO] ERRO fora_de_turno
+[ENVIO] TIRO 1 J10
+[TIMEOUT] Reenviando o mesmo tiro.
+[ENVIO] TIRO 1 J10
+[RESULTADO] J10: AGUA
