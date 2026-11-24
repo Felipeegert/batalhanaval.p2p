@@ -3,11 +3,10 @@ import socket
 import sys
 from dataclasses import dataclass
 
-from tabuleiro import Tabuleiro, posicionar_frota
+from tabuleiro import Tabuleiro, posicionar_frota, LINHAS, TAMANHO
 
 VERSAO_PROTOCOLO = "1"
-CODIFICACAO = "utf-8"
-TAMANHO_BUFFER = 4096
+BUFFER = 4096
 
 
 class ErroProtocolo(Exception):
@@ -21,25 +20,25 @@ class ConexaoTCP:
 
     @classmethod
     def criar(cls, sock):
-        return cls(sock=sock, buffer=bytearray())
+        return cls(sock, bytearray())
 
-    def enviar(self, mensagem: str) -> None:
+    def enviar(self, mensagem: str):
         if "\n" in mensagem or "\r" in mensagem:
-            raise ErroProtocolo("Uma mensagem não pode conter quebras de linha.")
-        self.sock.sendall((mensagem + "\n").encode(CODIFICACAO))
+            raise ErroProtocolo("Mensagem não pode conter quebra de linha.")
+        self.sock.sendall((mensagem + "\n").encode("utf-8"))
 
     def receber(self) -> str:
         while b"\n" not in self.buffer:
-            bloco = self.sock.recv(TAMANHO_BUFFER)
+            bloco = self.sock.recv(BUFFER)
             if not bloco:
-                raise ConnectionError("O outro jogador encerrou a conexão.")
+                raise ConnectionError("Conexão encerrada pelo outro jogador.")
             self.buffer.extend(bloco)
-        linha, restante = self.buffer.split(b"\n", 1)
-        self.buffer = bytearray(restante)
+        linha, resto = self.buffer.split(b"\n", 1)
+        self.buffer = bytearray(resto)
         try:
-            return linha.decode(CODIFICACAO).rstrip("\r")
+            return linha.decode("utf-8").rstrip("\r")
         except UnicodeDecodeError as exc:
-            raise ErroProtocolo("Mensagem recebida não está em UTF-8.") from exc
+            raise ErroProtocolo("Mensagem recebida não é UTF-8 válido.") from exc
 
     def fechar(self):
         try:
@@ -49,16 +48,16 @@ class ConexaoTCP:
         self.sock.close()
 
 
-def criar_conexao(args) -> ConexaoTCP:
+def criar_conexao(args):
     if args.escutar is not None:
         servidor = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             servidor.bind(("0.0.0.0", args.escutar))
             servidor.listen(1)
-            print(f"[REDE] Aguardando um jogador na porta {args.escutar}...")
+            print(f"[REDE] Aguardando conexão na porta {args.escutar}...")
             sock, endereco = servidor.accept()
-            print(f"[REDE] Conectado com {endereco[0]}:{endereco[1]}")
+            print(f"[REDE] Conectado a {endereco[0]}:{endereco[1]}.")
         finally:
             servidor.close()
     else:
@@ -70,171 +69,30 @@ def criar_conexao(args) -> ConexaoTCP:
     return ConexaoTCP.criar(sock)
 
 
-def apresentar_e_validar_protocolo(conexao: ConexaoTCP, apelido: str):
-    conexao.enviar(f"OLA {VERSAO_PROTOCOLO} {apelido}")
-    resposta = conexao.receber()
-    partes = resposta.split(" ", 2)
+def handshake(con, apelido):
+    con.enviar(f"OLA {VERSAO_PROTOCOLO} {apelido}")
+    msg = con.receber()
+    partes = msg.split(" ", 2)
     if len(partes) != 3 or partes[0] != "OLA":
-        conexao.enviar("ERRO mensagem_inicial_invalida")
-        raise ErroProtocolo(f"Esperava OLA, mas recebeu: {resposta!r}")
+        con.enviar("ERRO mensagem_inicial_invalida")
+        raise ErroProtocolo(f"Esperava OLA; recebeu {msg!r}.")
     if partes[1] != VERSAO_PROTOCOLO:
-        conexao.enviar("ERRO versao_incompativel")
+        con.enviar("ERRO versao_incompativel")
         raise ErroProtocolo(f"Versão incompatível: {partes[1]}.")
-    apelido_oponente = partes[2].strip()
-    if not apelido_oponente:
-        raise ErroProtocolo("O colega enviou um apelido vazio.")
-    print(f"[PROTOCOLO] Oponente: {apelido_oponente} (versão {partes[1]}).")
-    return apelido_oponente
+    if not partes[2].strip():
+        raise ErroProtocolo("Apelido vazio recebido.")
+    print(f"[PROTOCOLO] Jogando contra {partes[2]} (versão {partes[1]}).")
+    return partes[2]
 
 
-def sincronizar_pronto(conexao: ConexaoTCP):
-    conexao.enviar("PRONTO")
-    resposta = conexao.receber()
+def sincronizar_pronto(con):
+    con.enviar("PRONTO")
+    resposta = con.receber()
     if resposta != "PRONTO":
-        raise ErroProtocolo(f"Esperava PRONTO, mas recebeu: {resposta!r}")
-    print("[JOGO] Ambos enviaram PRONTO. A partida vai começar.")
+        raise ErroProtocolo(f"Esperava PRONTO; recebeu {resposta!r}.")
 
 
-def interpretar_resultado(mensagem: str, seq_esperado: int):
-    partes = mensagem.split()
-    if len(partes) < 3 or partes[0] != "RESULTADO":
-        raise ErroProtocolo(f"Esperava RESULTADO, recebeu: {mensagem!r}")
-    try:
-        seq = int(partes[1])
-    except ValueError as exc:
-        raise ErroProtocolo("Número de sequência inválido no RESULTADO.") from exc
-    if seq != seq_esperado:
-        raise ErroProtocolo(
-            f"RESULTADO com seq {seq}; era esperado seq {seq_esperado}."
-        )
-
-    if partes[2] == "AGUA" and len(partes) == 3:
-        return "AGUA", False
-    if partes[2] == "ACERTOU" and len(partes) == 3:
-        return "ACERTOU", False
-    if partes[2] == "AFUNDOU" and len(partes) in (4, 5):
-        fim = len(partes) == 5 and partes[4] == "FIM"
-        if len(partes) == 5 and not fim:
-            raise ErroProtocolo("Sufixo inválido no RESULTADO.")
-        return f"AFUNDOU {partes[3]}", fim
-    raise ErroProtocolo(f"Conteúdo inválido no RESULTADO: {mensagem!r}")
-
-
-def trocar_frotas_no_fim(conexao: ConexaoTCP, tabuleiro: Tabuleiro):
-    # A troca está prevista no protocolo e ocorre somente depois do FIM.
-    conexao.enviar(f"FROTA {tabuleiro.serializar_frota()}")
-    resposta = conexao.receber()
-    if not resposta.startswith("FROTA "):
-        raise ErroProtocolo(f"Esperava FROTA no encerramento, recebeu: {resposta!r}")
-    print(f"[CONFERÊNCIA] Frota informada pelo oponente: {resposta[6:]}")
-    print(f"[CONFERÊNCIA] Tua frota: {tabuleiro.serializar_frota()}")
-    print("[CONFERÊNCIA] A comparação detalhada das frotas será implementada na etapa 5.")
-
-
-def jogar(conexao: ConexaoTCP, tabuleiro: Tabuleiro, anfitriao: bool):
-    minha_vez = anfitriao
-    seq_enviado = 0
-    proximo_seq_recebido = 1
-    tiros_feitos: set[str] = set()
-    tiros_oponente: dict[str, str] = {}
-
-    print("\n=== PARTIDA INICIADA ===")
-    print("Tu podes digitar 'sair' para encerrar a partida.")
-    while True:
-        if minha_vez:
-            print("\n[VEZ] É tua vez de atirar.")
-            print("Teus tiros no tabuleiro adversário:")
-            exibir_tabuleiro_tiros(tiros_oponente)
-            while True:
-                coordenada = input("Coordenada para disparar (ex.: B7): ").strip().upper()
-                if coordenada.lower() == "sair":
-                    conexao.enviar("TCHAU")
-                    print("[JOGO] Tu encerraste a partida.")
-                    return
-                try:
-                    # Reutiliza a validação de coordenadas do tabuleiro.
-                    coordenada = tabuleiro.normalizar_coordenada(coordenada)
-                except ValueError as erro:
-                    print(f"[TIRO] {erro}")
-                    continue
-                if coordenada in tiros_feitos:
-                    print(f"[TIRO] Tu já disparaste em {coordenada}. Escolhe outra casa.")
-                    continue
-                break
-
-            seq_enviado += 1
-            tiros_feitos.add(coordenada)
-            conexao.enviar(f"TIRO {seq_enviado} {coordenada}")
-            print(f"[REDE] Enviado: TIRO {seq_enviado} {coordenada}")
-
-            resposta = conexao.receber()
-            if resposta.startswith("ERRO "):
-                print(f"[PROTOCOLO] O oponente rejeitou o tiro: {resposta[5:]}")
-                # A etapa de confiabilidade tratará a recuperação de seq/tiro.
-                tiros_feitos.discard(coordenada)
-                seq_enviado -= 1
-                continue
-            resultado, fim = interpretar_resultado(resposta, seq_enviado)
-            tiros_oponente[coordenada] = resultado
-            print(f"[RESULTADO] Tiro em {coordenada}: {resultado}")
-            if fim:
-                print("\n🎉 Tu venceste! Toda a frota adversária foi afundada.")
-                trocar_frotas_no_fim(conexao, tabuleiro)
-                return
-            minha_vez = False
-
-        else:
-            print("\n[VEZ] Aguardando o tiro do oponente...")
-            mensagem = conexao.receber()
-            if mensagem == "TCHAU":
-                print("[JOGO] O oponente encerrou a conexão.")
-                return
-            if not mensagem.startswith("TIRO "):
-                conexao.enviar("ERRO mensagem_inesperada")
-                print(f"[PROTOCOLO] Mensagem inesperada: {mensagem}")
-                continue
-
-            partes = mensagem.split()
-            if len(partes) != 3:
-                conexao.enviar("ERRO formato_tiro_invalido")
-                continue
-            try:
-                seq_recebido = int(partes[1])
-            except ValueError:
-                conexao.enviar("ERRO sequencia_invalida")
-                continue
-
-            if seq_recebido != proximo_seq_recebido:
-                conexao.enviar("ERRO sequencia_fora_de_ordem")
-                print("[PROTOCOLO] Número de sequência inesperado.")
-                continue
-
-            coordenada = partes[2].upper()
-            try:
-                resultado, fim = tabuleiro.registrar_tiro(coordenada)
-            except ValueError as erro:
-                conexao.enviar("ERRO coordenada_invalida_ou_repetida")
-                print(f"[TIRO] Tiro rejeitado: {erro}")
-                continue
-
-            proximo_seq_recebido += 1
-            resposta = f"RESULTADO {seq_recebido} {resultado}"
-            if fim:
-                resposta += " FIM"
-            conexao.enviar(resposta)
-            print(f"[REDE] Recebido: TIRO {seq_recebido} {coordenada}")
-            print(f"[RESULTADO] Teu tabuleiro: {coordenada} -> {resultado}")
-            tabuleiro.exibir()
-
-            if fim:
-                print("\n[DERROTA] Toda a tua frota foi afundada.")
-                trocar_frotas_no_fim(conexao, tabuleiro)
-                return
-            minha_vez = True
-
-
-def exibir_tabuleiro_tiros(tiros: dict[str, str]):
-    from tabuleiro import LINHAS, TAMANHO
+def desenhar_tiros(tiros):
     print("       " + " ".join(f"{n:2}" for n in range(1, 11)))
     print("     +" + "---" * 10 + "+")
     for i, letra in enumerate(LINHAS):
@@ -246,48 +104,198 @@ def exibir_tabuleiro_tiros(tiros: dict[str, str]):
             celulas.append(f"{marca:2}")
         print(f"     {letra}|" + " ".join(celulas) + "|")
     print("     +" + "---" * 10 + "+")
-    print("     . = ainda não atingido | o = água | X = acerto/afundado")
+    print("     . não jogado | o água | X acerto")
+
+
+def mostrar_painel(apelido, oponente, tabuleiro, tiros, minha_vez, seq):
+    print("\n" + "=" * 58)
+    print(f" BATALHA NAVAL  |  {apelido} vs {oponente}")
+    print("=" * 58)
+    print(f" SUA VEZ: {'SIM — escolha um alvo' if minha_vez else 'NÃO — aguardando oponente'}")
+    print(f" Próximo número de tiro enviado: {seq + 1}")
+    print("\n[1] SEU TABULEIRO — navios e tiros recebidos")
+    tabuleiro.exibir(mostrar_navios=True)
+    print("\n[2] TABULEIRO DO OPONENTE — seus tiros")
+    desenhar_tiros(tiros)
+    print("Legenda: PA porta-aviões | EN encouraçado | CR cruzador | DE destróier")
+    print("         o água | X acerto | . desconhecido")
+    print("=" * 58)
+
+
+def interpretar_resultado(msg, seq_esperado):
+    p = msg.split()
+    if len(p) < 3 or p[0] != "RESULTADO":
+        raise ErroProtocolo(f"Esperava RESULTADO; recebeu {msg!r}.")
+    try:
+        seq = int(p[1])
+    except ValueError as exc:
+        raise ErroProtocolo("Sequência inválida em RESULTADO.") from exc
+    if seq != seq_esperado:
+        raise ErroProtocolo(f"RESULTADO seq {seq}; esperado {seq_esperado}.")
+    if p[2] in ("AGUA", "ACERTOU") and len(p) == 3:
+        return p[2], False
+    if p[2] == "AFUNDOU" and len(p) in (4, 5):
+        if len(p) == 5 and p[4] != "FIM":
+            raise ErroProtocolo("Sufixo inválido em RESULTADO.")
+        return f"AFUNDOU {p[3]}", len(p) == 5
+    raise ErroProtocolo(f"RESULTADO inválido: {msg!r}.")
+
+
+def trocar_frotas(con, tabuleiro):
+    con.enviar(f"FROTA {tabuleiro.serializar_frota()}")
+    resposta = con.receber()
+    if not resposta.startswith("FROTA "):
+        raise ErroProtocolo(f"Esperava FROTA; recebeu {resposta!r}.")
+    print("\n[CONFERÊNCIA] Frota recebida do adversário:")
+    print(resposta[6:])
+    print("[CONFERÊNCIA] Tua frota:")
+    print(tabuleiro.serializar_frota())
+
+
+def jogar(con, apelido, oponente, tabuleiro, anfitriao):
+    minha_vez = anfitriao
+    seq_enviado = 0
+    seq_recebido = 1
+    tiros_feitos = set()
+    tiros_oponente = {}
+
+    while True:
+        mostrar_painel(apelido, oponente, tabuleiro, tiros_oponente, minha_vez, seq_enviado)
+
+        if minha_vez:
+            print("\n[AÇÃO] Digite uma coordenada (A1 a J10). Comandos: ajuda, sair.")
+            while True:
+                coord = input("Seu tiro > ").strip().upper()
+                if coord.lower() == "SAIR":
+                    con.enviar("TCHAU")
+                    print("[JOGO] Você encerrou a partida.")
+                    return
+                if coord.lower() == "AJUDA":
+                    print("Escolha uma casa ainda não atingida do tabuleiro adversário.")
+                    continue
+                try:
+                    coord = tabuleiro.normalizar_coordenada(coord)
+                except ValueError as exc:
+                    print(f"[ENTRADA INVÁLIDA] {exc}")
+                    continue
+                if coord in tiros_feitos:
+                    print("[ENTRADA INVÁLIDA] Você já atirou nessa coordenada.")
+                    continue
+                break
+
+            seq_enviado += 1
+            tiros_feitos.add(coord)
+            con.enviar(f"TIRO {seq_enviado} {coord}")
+            print(f"[ENVIO] TIRO {seq_enviado} {coord}")
+            resposta = con.receber()
+            if resposta == "TCHAU":
+                print("[JOGO] O adversário encerrou a partida.")
+                return
+            if resposta.startswith("ERRO "):
+                print(f"[PROTOCOLO] O adversário rejeitou o tiro: {resposta[5:]}")
+                tiros_feitos.discard(coord)
+                seq_enviado -= 1
+                continue
+            resultado, fim = interpretar_resultado(resposta, seq_enviado)
+            tiros_oponente[coord] = resultado
+            print(f"\n[RESULTADO] {coord}: {resultado}")
+            if resultado == "AGUA":
+                print("O tiro caiu na água.")
+            elif resultado == "ACERTOU":
+                print("Você atingiu um navio!")
+            else:
+                print(f"Você afundou um navio: {resultado.split()[1]}!")
+            if fim:
+                print("\n*** VITÓRIA! Você afundou toda a frota adversária! ***")
+                trocar_frotas(con, tabuleiro)
+                return
+            input("\nPressione ENTER para atualizar o painel...")
+            minha_vez = False
+
+        else:
+            print("\n[AGUARDANDO] É a vez do adversário. Aguardando TIRO...")
+            msg = con.receber()
+            if msg == "TCHAU":
+                print("[JOGO] O adversário encerrou a partida.")
+                return
+            if not msg.startswith("TIRO "):
+                con.enviar("ERRO mensagem_inesperada")
+                print(f"[ERRO] Mensagem inesperada: {msg}")
+                continue
+            p = msg.split()
+            if len(p) != 3:
+                con.enviar("ERRO formato_tiro_invalido")
+                continue
+            try:
+                seq = int(p[1])
+            except ValueError:
+                con.enviar("ERRO sequencia_invalida")
+                continue
+            if seq != seq_recebido:
+                con.enviar("ERRO sequencia_fora_de_ordem")
+                continue
+            coord = p[2].upper()
+            try:
+                resultado, fim = tabuleiro.registrar_tiro(coord)
+            except ValueError as exc:
+                con.enviar("ERRO coordenada_invalida_ou_repetida")
+                print(f"[TIRO REJEITADO] {exc}")
+                continue
+            seq_recebido += 1
+            resposta = f"RESULTADO {seq} {resultado}" + (" FIM" if fim else "")
+            con.enviar(resposta)
+            print(f"\n[TIRO RECEBIDO] {coord} — {resultado}")
+            if resultado == "AGUA":
+                print("O adversário errou: água.")
+            elif resultado == "ACERTOU":
+                print("Seu navio foi atingido!")
+            else:
+                print(f"Seu navio {resultado.split()[1]} foi afundado!")
+            tabuleiro.exibir(mostrar_navios=True)
+            if fim:
+                print("\n*** DERROTA! Toda sua frota foi afundada. ***")
+                trocar_frotas(con, tabuleiro)
+                return
+            input("\nPressione ENTER para passar o controle...")
+            minha_vez = True
 
 
 def executar(args):
-    conexao = None
+    con = None
     try:
-        conexao = criar_conexao(args)
-        oponente = apresentar_e_validar_protocolo(conexao, args.apelido)
+        con = criar_conexao(args)
+        oponente = handshake(con, args.apelido)
         tabuleiro = posicionar_frota()
-        sincronizar_pronto(conexao)
-        if args.escutar is not None:
-            print("[JOGO] Tu és o anfitrião. Começas atirando.")
-        else:
-            print(f"[JOGO] Tu és o convidado. {oponente} começa atirando.")
-        jogar(conexao, tabuleiro, anfitriao=(args.escutar is not None))
+        print("\n[STATUS] Frota pronta. Aguardando o outro jogador...")
+        sincronizar_pronto(con)
+        print("[STATUS] Ambos estão prontos. Partida iniciada!")
+        jogar(con, args.apelido, oponente, tabuleiro, args.escutar is not None)
     except (OSError, ConnectionError, ErroProtocolo) as exc:
-        print(f"[ERRO] {exc}", file=sys.stderr)
+        print(f"\n[ERRO DE REDE/PROTOCOLO] {exc}", file=sys.stderr)
         return 1
     finally:
-        if conexao is not None:
-            conexao.fechar()
+        if con:
+            con.fechar()
     print("[REDE] Conexão encerrada.")
     return 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Batalha Naval P2P sobre TCP.")
-    papel = parser.add_mutually_exclusive_group(required=True)
-    papel.add_argument("--escutar", type=int, metavar="PORTA")
-    papel.add_argument("--conectar", metavar="IP")
+    parser = argparse.ArgumentParser(description="Batalha Naval P2P sobre TCP — etapa 4.")
+    grupo = parser.add_mutually_exclusive_group(required=True)
+    grupo.add_argument("--escutar", type=int, metavar="PORTA")
+    grupo.add_argument("--conectar", metavar="IP")
     parser.add_argument("porta", nargs="?", type=int)
     parser.add_argument("--apelido", required=True)
     args = parser.parse_args()
-
     if args.conectar is not None and args.porta is None:
-        parser.error("informe a PORTA depois do IP ao usar --conectar")
+        parser.error("informe a PORTA depois do IP")
     if args.escutar is not None and args.porta is not None:
-        parser.error("não informe uma segunda porta junto com --escutar")
+        parser.error("não informe uma segunda porta com --escutar")
     porta = args.escutar if args.escutar is not None else args.porta
     if not 1 <= porta <= 65535:
         parser.error("porta deve estar entre 1 e 65535")
-    if not args.apelido.strip() or " " in args.apelido:
+    if not args.apelido or " " in args.apelido:
         parser.error("apelido deve ser uma palavra sem espaços")
     raise SystemExit(executar(args))
 
